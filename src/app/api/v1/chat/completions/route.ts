@@ -20,12 +20,13 @@ import {
   CHAT_ADMISSION_QUEUE_MAX_MS,
   releaseChatAdmissionAfterHandler,
   releaseChatAdmissionWhenDone,
+  resolveSessionId,
 } from "@/shared/middleware/chatBodyAdmission";
 import {
   readCompressionRequestHeader,
   withCompressionHeaderEcho,
 } from "@/shared/utils/compressionHeaderEcho";
-import { resolveModelAliasOnBody } from "@/lib/modelAliasResolver";
+import { resolveModelAliasWithSeedFallbackOnBody } from "@/lib/modelAliasResolver";
 
 let initPromise = null;
 
@@ -101,7 +102,9 @@ export async function POST(request) {
   // Reserve heavyweight capacity atomically and ingest the body with a hard byte bound
   // BEFORE JSON parsing. Missing or dishonest Content-Length values cannot bypass
   // the actual-byte limit. Capacity exhaustion is retryable rather than process-fatal.
+  const sessionId = resolveSessionId(request);
   const admissionResult = await admitChatRequest(request, {
+    sessionId,
     queueMs: CHAT_ADMISSION_QUEUE_MAX_MS,
   });
   if (admissionResult.admit === false) return admissionResult.response;
@@ -147,7 +150,9 @@ export async function POST(request) {
         }
 
         const structuralAdmission = await admitChatStructure(parsedBody, admission.lease, {
+          sessionId,
           queueMs: CHAT_ADMISSION_QUEUE_MAX_MS,
+          signal: request.signal,
         });
         if (structuralAdmission.admit === false) {
           admission.lease?.release();
@@ -156,7 +161,7 @@ export async function POST(request) {
 
         // Resolve model alias before forwarding to handleChat
         if (parsedBody && typeof parsedBody === "object") {
-          await resolveModelAliasOnBody(parsedBody).catch(() => {
+          await resolveModelAliasWithSeedFallbackOnBody(parsedBody).catch(() => {
             /* swallow — fall through with original model */
           });
         }
